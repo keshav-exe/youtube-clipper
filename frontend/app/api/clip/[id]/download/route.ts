@@ -1,59 +1,49 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from "next/server";
 
 export async function GET(
-  request: NextRequest,
+  _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const { id } = await params;
-    
-    // Step 1: Get the job status and public URL from backend
-    const backendUrl = process.env.BACKEND_API_URL || 'http://localhost:3001';
+    const backendUrl = process.env.BACKEND_API_URL || "http://localhost:3001";
+
     const statusRes = await fetch(`${backendUrl}/api/clip/${id}`);
-    
     if (!statusRes.ok) {
-      return NextResponse.json({ error: 'Job not found' }, { status: 404 });
+      return NextResponse.json({ error: "Job not found" }, { status: 404 });
     }
-    
+
     const jobData = await statusRes.json();
-    
-    if (jobData.status !== 'ready' || !jobData.url) {
-      return NextResponse.json({ error: 'Job not ready' }, { status: 409 });
+    if (jobData.status !== "ready") {
+      return NextResponse.json({ error: "Job not ready" }, { status: 409 });
     }
-    
-    // Step 2: Download the file from Supabase
-    const downloadRes = await fetch(jobData.url);
+
+    const downloadRes = await fetch(`${backendUrl}/api/clip/${id}/file`);
     if (!downloadRes.ok) {
-      return NextResponse.json({ error: 'Failed to download from Supabase' }, { status: 500 });
+      return NextResponse.json({ error: "Failed to download clip" }, { status: 500 });
     }
-    
-    const blob = await downloadRes.blob();
-    
-    // Step 3: Clean up the file from Supabase via frontend route
-    try {
-      const cleanupRes = await fetch(`${request.nextUrl.origin}/api/clip/${id}/cleanup`, {
-        method: 'DELETE'
-      });
-      
-      if (!cleanupRes.ok) {
-        console.warn(`Failed to clean up job ${id}:`, await cleanupRes.text());
-      } else {
-        console.log(`Successfully cleaned up job ${id}`);
+
+    const headers = new Headers();
+    downloadRes.headers.forEach((value, key) => {
+      if (
+        ["content-type", "content-length", "content-disposition"].includes(
+          key.toLowerCase()
+        )
+      ) {
+        headers.set(key, value);
       }
-    } catch (cleanupErr) {
-      console.error(`Cleanup error for job ${id}:`, cleanupErr);
-    }
-    
-    // Step 4: Return the file to the client
-    return new NextResponse(blob, {
-      headers: {
-        'Content-Type': 'video/mp4',
-        'Content-Disposition': 'attachment; filename="clip.mp4"',
-      },
     });
-    
+
+    fetch(`${backendUrl}/api/clip/${id}/cleanup`, { method: "DELETE" }).catch(
+      () => {}
+    );
+
+    return new NextResponse(downloadRes.body, {
+      status: downloadRes.status,
+      headers,
+    });
   } catch (error) {
-    console.error('Download route error:', error);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    console.error("Download route error:", error);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
-} 
+}

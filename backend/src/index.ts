@@ -4,30 +4,15 @@ import cors from "cors";
 import { spawn } from "child_process";
 import path from "path";
 import fs from "fs";
-import { createClient } from "@supabase/supabase-js";
+import { logYtDlpConfig, runYtDlp, runYtDlpJson } from "./ytdlp";
 
 dotenv.config();
-
-// --- Supabase setup ---
-const supabaseUrl = process.env.SUPABASE_URL as string;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY as string;
-const bucketName = process.env.SUPABASE_BUCKET || 'videos';
-if (!supabaseUrl || !supabaseServiceKey) {
-  throw new Error('Supabase credentials are not set in environment variables');
-}
-const supabase = createClient(supabaseUrl, supabaseServiceKey, {
-  auth: { persistSession: false }
-});
 
 const app = express();
 const port = process.env.PORT || 3001;
 
-const allowedOrigin = process.env.NODE_ENV === "production" 
-  ? "https://clippa.in" 
-  : "http://localhost:3000";
-
 const corsOptions: cors.CorsOptions = {
-  origin: allowedOrigin,
+  origin: process.env.FRONTEND_URL || "http://localhost:3000",
   credentials: true,
 };
 
@@ -39,102 +24,106 @@ if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir);
 }
 
-const jobsDir = path.join(__dirname, "../jobs");
-if (!fs.existsSync(jobsDir)) {
-  fs.mkdirSync(jobsDir);
-}
-
 interface Job {
   id: string;
-  status: 'processing' | 'ready' | 'error';
+  status: "processing" | "ready" | "error";
   filePath?: string;
-  storagePath?: string;
-  publicUrl?: string;
   error?: string;
+  createdAt: number;
 }
+
+const jobs = new Map<string, Job>();
 
 function createJobId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
 
 function timeToSeconds(timeStr: string): number {
-  const parts = timeStr.split(':');
-  return parseInt(parts[0]) * 3600 + parseInt(parts[1]) * 60 + parseFloat(parts[2]);
+  const parts = timeStr.split(":");
+  return (
+    parseInt(parts[0]) * 3600 +
+    parseInt(parts[1]) * 60 +
+    parseFloat(parts[2])
+  );
 }
 
 function secondsToTime(seconds: number): string {
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
   const secs = seconds % 60;
-  return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toFixed(3).padStart(6, '0')}`;
+  return `${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}:${secs.toFixed(3).padStart(6, "0")}`;
 }
 
-async function adjustSubtitleTimestamps(inputPath: string, outputPath: string, startTime: string): Promise<void> {
+async function adjustSubtitleTimestamps(
+  inputPath: string,
+  outputPath: string,
+  startTime: string
+): Promise<void> {
   const startSeconds = timeToSeconds(startTime);
-  const content = await fs.promises.readFile(inputPath, 'utf-8');
-  
-  // Regex to match VTT timestamp lines (e.g., "00:01:30.000 --> 00:01:35.000")
-  const timestampRegex = /(\d{2}:\d{2}:\d{2}\.\d{3}) --> (\d{2}:\d{2}:\d{2}\.\d{3})/g;
-  
-  const adjustedContent = content.replace(timestampRegex, (match, start, end) => {
-    const startSec = timeToSeconds(start) - startSeconds;
-    const endSec = timeToSeconds(end) - startSeconds;
-    
-    // Skip negative timestamps (before clip start)
-    if (startSec < 0) return match; // Keep original, will be filtered out by video duration
-    
-    return `${secondsToTime(startSec)} --> ${secondsToTime(endSec)}`;
-  });
-  
-  await fs.promises.writeFile(outputPath, adjustedContent, 'utf-8');
+  const content = await fs.promises.readFile(inputPath, "utf-8");
+
+  const timestampRegex =
+    /(\d{2}:\d{2}:\d{2}\.\d{3}) --> (\d{2}:\d{2}:\d{2}\.\d{3})/g;
+
+  const adjustedContent = content.replace(
+    timestampRegex,
+    (match, start, end) => {
+      const startSec = timeToSeconds(start) - startSeconds;
+      const endSec = timeToSeconds(end) - startSeconds;
+
+      if (startSec < 0) return match;
+
+      return `${secondsToTime(startSec)} --> ${secondsToTime(endSec)}`;
+    }
+  );
+
+  await fs.promises.writeFile(outputPath, adjustedContent, "utf-8");
+}
+
+function getCropFilter(cropRatio: string): string | null {
+  switch (cropRatio) {
+    case "vertical":
+      return "crop=w='if(gt(a,9/16),ih*9/16,iw)':h='if(gt(a,9/16),ih,iw*16/9)':x='(iw-ow)/2':y='(ih-oh)/2'";
+    case "square":
+      return "crop='min(iw,ih)':'min(iw,ih)':'(iw-min(iw,ih))/2':'(ih-min(iw,ih))/2'";
+    default:
+      return null;
+  }
 }
 
 app.post("/api/clip", async (req, res) => {
-  const { url, startTime, endTime, subtitles, formatId, userId } = req.body || {};
-  if (!url || !startTime || !endTime || !userId) {
-    return res.status(400).json({ error: "url, startTime, endTime and userId are required" });
+  const { url, startTime, endTime, subtitles, formatId, cropRatio = "original" } =
+    req.body || {};
+  if (!url || !startTime || !endTime) {
+    return res
+      .status(400)
+      .json({ error: "url, startTime, and endTime are required" });
   }
 
   const id = createJobId();
   const outputPath = path.join(uploadsDir, `clip-${id}.mp4`);
-  
-  const initialJobData = {
+
+  jobs.set(id, {
     id,
-    user_id: userId,
-    status: 'processing',
-  };
+    status: "processing",
+    filePath: outputPath,
+    createdAt: Date.now(),
+  });
 
-  const { error: insertError } = await supabase
-    .from('jobs')
-    .insert([initialJobData]);
-
-  if (insertError) {
-    console.error(`[job ${id}] failed to create job in database`, insertError);
-    return res.status(500).json({ error: 'Failed to create job' });
-  }
-
-  console.log(`[job ${id}] created and saved to database.`);
+  console.log(`[job ${id}] created`);
 
   (async () => {
-    let finalJobStatus: { [key: string]: any } = {};
-    let tempCookiesPath: string | null = null;
     try {
       const section = `*${startTime}-${endTime}`;
-      
-      const prodCookiesPath = '/etc/secrets/cookies.txt';
-      if (fs.existsSync(prodCookiesPath)) {
-        const cookiesContent = fs.readFileSync(prodCookiesPath, 'utf-8');
-        tempCookiesPath = path.join(uploadsDir, `cookies-${id}.txt`);
-        fs.writeFileSync(tempCookiesPath, cookiesContent);
-      }
 
-      const ytArgs = [
-        url,
-      ];
+      const ytArgs = [url];
       if (formatId) {
         ytArgs.push("-f", formatId);
       } else {
-        ytArgs.push("-f", "bv[ext=mp4][vcodec^=avc1][height<=?1080][fps<=?60]+ba[ext=m4a]/best[ext=mp4][vcodec^=avc1][height<=?1080]");
+        ytArgs.push(
+          "-f",
+          "bv[ext=mp4][vcodec^=avc1][height<=?1080][fps<=?60]+ba[ext=m4a]/best[ext=mp4][vcodec^=avc1][height<=?1080]"
+        );
       }
       ytArgs.push(
         "--download-sections",
@@ -143,13 +132,11 @@ app.post("/api/clip", async (req, res) => {
         outputPath,
         "--merge-output-format",
         "mp4",
-        "--no-check-certificates",
         "--no-warnings",
         "--add-header",
         "referer:youtube.com",
         "--add-header",
-        "user-agent:Mozilla/5.0",
-        "--verbose"
+        "user-agent:Mozilla/5.0"
       );
       if (subtitles) {
         ytArgs.push(
@@ -161,207 +148,152 @@ app.post("/api/clip", async (req, res) => {
           "vtt"
         );
       }
-      if (tempCookiesPath) {
-        ytArgs.push("--cookies", tempCookiesPath);
-      } else {
-        const localCookiesPath = path.join(__dirname, "cookies.txt");
-        if (fs.existsSync(localCookiesPath)) {
-          ytArgs.push("--cookies", localCookiesPath)
-        }
-      }
 
       console.log(`[job ${id}] starting yt-dlp`);
-      const yt = spawn(path.resolve(__dirname, '../bin/yt-dlp'), ytArgs);
-      yt.stderr.on('data', d => console.error(`[job ${id}]`, d.toString()));
-
-      await new Promise<void>((resolve, reject) => {
-        yt.on('close', (code, signal) => {
-          if (code === 0) {
-            resolve();
-          } else if (code === null) {
-            reject(new Error(`yt-dlp process was killed by signal: ${signal || 'unknown'}`));
-          } else {
-            reject(new Error(`yt-dlp exited with code ${code}`));
-          }
-        });
-        yt.on('error', reject);
-      });
+      await runYtDlp(ytArgs, `job ${id}`);
 
       const fastPath = path.join(uploadsDir, `clip-${id}-fast.mp4`);
       const subPath = outputPath.replace(/\.mp4$/, ".en.vtt");
       const subtitlesExist = fs.existsSync(subPath);
 
-      // Adjust subtitle timestamps if subtitles exist
       if (subtitles && subtitlesExist) {
         const adjustedSubPath = path.join(uploadsDir, `clip-${id}-adjusted.vtt`);
         await adjustSubtitleTimestamps(subPath, adjustedSubPath, startTime);
-        // Replace the original subtitle file with the adjusted one
         await fs.promises.rename(adjustedSubPath, subPath);
       }
 
       await new Promise<void>((resolve, reject) => {
-        const ffmpegArgs = [
-          '-y',
-          '-i', outputPath,
-        ];
+        const ffmpegArgs = ["-y", "-i", outputPath];
 
+        const filterParts: string[] = [];
+        const cropFilter = getCropFilter(cropRatio);
+        if (cropFilter) filterParts.push(cropFilter);
         if (subtitles && subtitlesExist) {
-          console.log(`[job ${id}] burning subtitles from ${subPath}`);
-          ffmpegArgs.push(
-            '-vf', `subtitles=${subPath}`,
-            '-c:v', 'libx264',
-            '-c:a', 'aac',
-            '-b:a', '128k',
-            '-preset', 'ultrafast',  // Faster encoding, less CPU
-            '-crf', '28',            // Lower quality but much smaller file
-            '-maxrate', '2M',        // Limit bitrate
-            '-bufsize', '4M'         // Limit buffer size
-          );
-        } else {
-          // No subtitles to burn – copy video but transcode audio to AAC to ensure MP4 compatibility
-          ffmpegArgs.push(
-            '-c:v', 'copy', // keep original video
-            '-c:a', 'aac',
-            '-b:a', '128k'
-          );
+          filterParts.push(`subtitles=${subPath}`);
         }
 
-        // Move the `faststart` flag and output path outside the conditional so it applies to both modes
-        ffmpegArgs.push(
-          '-movflags', '+faststart',
-          fastPath
-        );
+        if (filterParts.length > 0) {
+          if (subtitles && subtitlesExist) {
+            console.log(`[job ${id}] burning subtitles from ${subPath}`);
+          }
+          if (cropFilter) {
+            console.log(`[job ${id}] cropping to ${cropRatio}`);
+          }
+          ffmpegArgs.push(
+            "-vf",
+            filterParts.join(","),
+            "-c:v",
+            "libx264",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+            "-preset",
+            "ultrafast",
+            "-crf",
+            "28",
+            "-maxrate",
+            "2M",
+            "-bufsize",
+            "4M"
+          );
+        } else {
+          ffmpegArgs.push("-c:v", "copy", "-c:a", "aac", "-b:a", "128k");
+        }
 
-        console.log(`[job ${id}] running ffmpeg`, ffmpegArgs.join(' '));
-        const ff = spawn('ffmpeg', ffmpegArgs);
-        
-        // Add timeout for ffmpeg process
+        ffmpegArgs.push("-movflags", "+faststart", fastPath);
+
+        console.log(`[job ${id}] running ffmpeg`, ffmpegArgs.join(" "));
+        const ff = spawn("ffmpeg", ffmpegArgs);
+
         const ffmpegTimeout = setTimeout(() => {
           console.log(`[job ${id}] ffmpeg timeout reached, killing process`);
-          ff.kill('SIGKILL');
-        }, 300000); // 5 minutes timeout
-        
-        ff.stderr.on('data', d => console.error(`[job ${id}] ffmpeg`, d.toString()));
-        ff.on('close', (code, signal) => {
+          ff.kill("SIGKILL");
+        }, 300000);
+
+        ff.stderr.on("data", (d) =>
+          console.error(`[job ${id}] ffmpeg`, d.toString())
+        );
+        ff.on("close", (code, signal) => {
           clearTimeout(ffmpegTimeout);
           if (code === 0) {
             resolve();
           } else if (code === null) {
-            reject(new Error(`ffmpeg process was killed by signal: ${signal || 'unknown'} - likely due to memory limits on Render`));
+            reject(
+              new Error(
+                `ffmpeg process was killed by signal: ${signal || "unknown"}`
+              )
+            );
           } else {
             reject(new Error(`ffmpeg exited with code ${code}`));
           }
         });
-        ff.on('error', reject);
+        ff.on("error", reject);
       });
 
-      await fs.promises.unlink(outputPath).catch(()=>{});
+      await fs.promises.unlink(outputPath).catch(() => {});
       await fs.promises.rename(fastPath, outputPath);
 
       if (subtitlesExist) {
         await fs.promises.unlink(subPath).catch(() => {});
       }
 
-      // ---- Upload processed clip to Supabase ----
-      const objectPath = `clip-${id}.mp4`;
-      console.log(`[job ${id}] uploading to Supabase: ${objectPath}`);
-      const fileBuffer = await fs.promises.readFile(outputPath);
-      const { error: uploadError } = await supabase.storage
-        .from(bucketName)
-        .upload(objectPath, fileBuffer, {
-          contentType: 'video/mp4',
-          upsert: true,
-        });
-      if (uploadError) throw uploadError;
+      jobs.set(id, {
+        id,
+        status: "ready",
+        filePath: outputPath,
+        createdAt: jobs.get(id)!.createdAt,
+      });
 
-      console.log(`[job ${id}] upload successful, getting public URL`);
-      const { data: pub } = supabase.storage
-        .from(bucketName)
-        .getPublicUrl(objectPath);
-
-      // Remove local file after upload
-      await fs.promises.unlink(outputPath).catch(() => {});
-
-      finalJobStatus = {
-        storage_path: objectPath,
-        public_url: pub.publicUrl,
-        status: 'ready',
-      };
-
-      console.log(`[job ${id}] ready - storagePath: ${finalJobStatus.storage_path}, publicUrl: ${finalJobStatus.public_url}`);
+      console.log(`[job ${id}] ready`);
     } catch (err: unknown) {
       console.error(`[job ${id}] failed`, err);
       const message = err instanceof Error ? err.message : String(err);
-      finalJobStatus = {
-        status: 'error',
+      jobs.set(id, {
+        id,
+        status: "error",
         error: message,
-      };
-    } finally {
-      if (tempCookiesPath && fs.existsSync(tempCookiesPath)) {
-        fs.unlinkSync(tempCookiesPath);
-      }
-      const { error: updateError } = await supabase
-        .from('jobs')
-        .update(finalJobStatus)
-        .eq('id', id);
-
-      if (updateError) {
-        console.error(`[job ${id}] failed to update final job status in database`, updateError);
-      }
+        createdAt: jobs.get(id)!.createdAt,
+      });
     }
   })();
 
   return res.status(202).json({ id });
 });
 
-app.get('/api/clip/:id', async (req, res) => {
+app.get("/api/clip/:id", (req, res) => {
   const { id } = req.params;
-  
-  const { data: job, error } = await supabase
-    .from('jobs')
-    .select('*')
-    .eq('id', id)
-    .single();
+  const job = jobs.get(id);
 
-  if (error || !job) {
-    console.log(`[job ${id}] not found in database. Error:`, error?.message);
-    return res.status(404).json({ error: 'job not found'});
+  if (!job) {
+    return res.status(404).json({ error: "job not found" });
   }
-  
-  return res.json({ 
-    status: job.status, 
-    error: job.error, 
-    url: job.public_url,
-    storagePath: job.storage_path 
+
+  return res.json({
+    status: job.status,
+    error: job.error,
   });
 });
 
-// Cleanup endpoint for frontend to delete files after download
-app.delete('/api/clip/:id/cleanup', async (req, res) => {
+app.delete("/api/clip/:id/cleanup", (req, res) => {
   const { id } = req.params;
+  const job = jobs.get(id);
 
-  // Delete the job row from database
-  const { error } = await supabase
-    .from('jobs')
-    .delete()
-    .eq('id', id);
-
-  if (error && error.code !== 'PGRST116') {
-    console.error(`[job ${id}] job cleanup delete error:`, error);
-    return res.status(500).json({ error: 'Job cleanup failed' });
+  if (job?.filePath && fs.existsSync(job.filePath)) {
+    fs.unlinkSync(job.filePath);
   }
 
-  console.log(`[job ${id}] job metadata cleaned up successfully from database`);
+  jobs.delete(id);
+  console.log(`[job ${id}] cleaned up`);
   return res.json({ success: true });
 });
 
-// Stream or download the generated clip directly from the backend
-app.get('/api/clip/:id/file', (req, res) => {
+app.get("/api/clip/:id/file", (req, res) => {
   const { id } = req.params;
   const filePath = path.join(uploadsDir, `clip-${id}.mp4`);
 
   if (!fs.existsSync(filePath)) {
-    return res.status(404).json({ error: 'file not found' });
+    return res.status(404).json({ error: "file not found" });
   }
 
   const stat = fs.statSync(filePath);
@@ -369,27 +301,25 @@ app.get('/api/clip/:id/file', (req, res) => {
   const range = req.headers.range;
 
   if (range) {
-    // Parse the Range header to support partial requests
-    const parts = range.replace(/bytes=/, '').split('-');
+    const parts = range.replace(/bytes=/, "").split("-");
     const start = parseInt(parts[0], 10);
     const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
     const chunkSize = end - start + 1;
 
     res.writeHead(206, {
-      'Content-Range': `bytes ${start}-${end}/${fileSize}`,
-      'Accept-Ranges': 'bytes',
-      'Content-Length': chunkSize,
-      'Content-Type': 'video/mp4',
-      'Content-Disposition': 'attachment; filename="clip.mp4"',
+      "Content-Range": `bytes ${start}-${end}/${fileSize}`,
+      "Accept-Ranges": "bytes",
+      "Content-Length": chunkSize,
+      "Content-Type": "video/mp4",
+      "Content-Disposition": 'attachment; filename="clip.mp4"',
     });
 
-    const stream = fs.createReadStream(filePath, { start, end });
-    stream.pipe(res);
+    fs.createReadStream(filePath, { start, end }).pipe(res);
   } else {
     res.writeHead(200, {
-      'Content-Length': fileSize,
-      'Content-Type': 'video/mp4',
-      'Content-Disposition': 'attachment; filename="clip.mp4"',
+      "Content-Length": fileSize,
+      "Content-Type": "video/mp4",
+      "Content-Disposition": 'attachment; filename="clip.mp4"',
     });
     fs.createReadStream(filePath).pipe(res);
   }
@@ -397,203 +327,110 @@ app.get('/api/clip/:id/file', (req, res) => {
 
 app.get("/api/formats", async (req, res) => {
   const { url } = req.query;
-  if (!url || typeof url !== 'string') {
+  if (!url || typeof url !== "string") {
     return res.status(400).json({ error: "url is required" });
   }
 
-  let tempCookiesPath: string | null = null;
   try {
-    const ytDlpPath = path.resolve(__dirname, '../bin/yt-dlp');
-    
-    const prodCookiesPath = '/etc/secrets/cookies.txt';
-    if (fs.existsSync(prodCookiesPath)) {
-      const cookiesContent = fs.readFileSync(prodCookiesPath, 'utf-8');
-      const jobId = createJobId();
-      tempCookiesPath = path.join(uploadsDir, `cookies-${jobId}.txt`);
-      fs.writeFileSync(tempCookiesPath, cookiesContent);
-    }
-    
-    const ytArgs = [
-      '-j', 
-      '--no-warnings',
-      '--no-check-certificates',
-      '--add-header',
-      'referer:youtube.com',
-      '--add-header',
-      'user-agent:Mozilla/5.0',
-      url as string
-    ];
-    
-    if (tempCookiesPath) {
-      ytArgs.push("--cookies", tempCookiesPath);
-    } else {
-      const localCookiesPath = path.join(__dirname, "cookies.txt");
-      if (fs.existsSync(localCookiesPath)) {
-        ytArgs.push("--cookies", localCookiesPath)
-      }
-    }
-    
-    console.log(`[formats] fetching formats for URL: ${url}`);
-    const yt = spawn(ytDlpPath, ytArgs);
-    
-    // Add timeout for yt-dlp process
-    const timeout = setTimeout(() => {
-      console.log(`[formats] timeout reached, killing yt-dlp process`);
-      yt.kill('SIGKILL');
-    }, 30000); // 30 second timeout
-    
-    let jsonData = '';
-    yt.stdout.on('data', (data) => {
-      jsonData += data.toString();
-    });
+    const jsonData = await runYtDlpJson(
+      ["-j", "--no-warnings", url],
+      "formats"
+    );
 
-    let errorData = '';
-    yt.stderr.on('data', (data) => {
-        errorData += data.toString();
-    });
+    const info = JSON.parse(jsonData);
 
-    yt.on('close', (code, signal) => {
-      clearTimeout(timeout);
-      if (tempCookiesPath && fs.existsSync(tempCookiesPath)) {
-        fs.unlinkSync(tempCookiesPath);
-      }
-      if (signal === 'SIGKILL') {
-        console.error(`[formats] yt-dlp process timed out after 30 seconds`);
-        return res.status(500).json({ error: 'Request timed out - video may be too long or unavailable' });
-      }
-      if (code !== 0) {
-        console.error(`[formats] yt-dlp exited with code ${code}`, errorData);
-        return res.status(500).json({ error: `yt-dlp exited with code ${code}` });
-      }
-      
-      try {
-        const info = JSON.parse(jsonData);
-        
-        const MAX_PIXELS = 1920 * 1080;
-        
-        const videoFormats = info.formats
-          .filter((f: any) => 
-            f.vcodec !== 'none' && 
-            f.height && f.width &&
-            (f.width * f.height <= MAX_PIXELS) && 
-            (f.ext === 'mp4' || f.ext === 'webm')
-          )
-          .map((f: any) => ({
-            format_id: f.format_id,
-            label: `${f.height}p${f.fps > 30 ? f.fps : ''}`,
-            height: f.height,
-            hasAudio: f.acodec !== 'none',
-            ext: f.ext
-          }))
-          .sort((a: any, b: any) => b.height - a.height);
-        
-        // Remove duplicates based on height and keep the best format for each resolution
-        const uniqueFormats = videoFormats.reduce((acc: any[], current: any) => {
-          const existing = acc.find((item) => item.label === current.label);
-          if (!existing) {
-            acc.push(current);
-          } else if (current.hasAudio && !existing.hasAudio) {
-            // Prefer formats with audio if available
-            const index = acc.findIndex((item) => item.label === current.label);
-            acc[index] = current;
-          }
-          return acc;
-        }, []);
-        
-        // If we need to use video-only formats, we'll use format selection that combines with best audio
-        const formatsForUser = uniqueFormats.map((f: any) => ({
-          format_id: f.hasAudio ? f.format_id : `${f.format_id}+bestaudio`,
-          label: f.label
-        }));
-        
-        return res.json({ formats: formatsForUser });
-      } catch (e) {
-          console.error('[formats] JSON parse error', e);
-          return res.status(500).json({ error: 'Failed to parse yt-dlp output'});
-      }
-    });
+    const MAX_PIXELS = 1920 * 1080;
 
-    yt.on('error', (err) => {
-        clearTimeout(timeout);
-        if (tempCookiesPath && fs.existsSync(tempCookiesPath)) {
-          fs.unlinkSync(tempCookiesPath);
+    const videoFormats = info.formats
+      .filter(
+        (f: {
+          vcodec: string;
+          height?: number;
+          width?: number;
+          ext: string;
+          fps?: number;
+          acodec: string;
+          format_id: string;
+        }) =>
+          f.vcodec !== "none" &&
+          f.height &&
+          f.width &&
+          f.width * f.height <= MAX_PIXELS &&
+          (f.ext === "mp4" || f.ext === "webm")
+      )
+      .map(
+        (f: {
+          format_id: string;
+          height: number;
+          fps: number;
+          acodec: string;
+          ext: string;
+        }) => ({
+          format_id: f.format_id,
+          label: `${f.height}p${f.fps > 30 ? f.fps : ""}`,
+          height: f.height,
+          hasAudio: f.acodec !== "none",
+          ext: f.ext,
+        })
+      )
+      .sort(
+        (a: { height: number }, b: { height: number }) => b.height - a.height
+      );
+
+    const uniqueFormats = videoFormats.reduce(
+      (
+        acc: { format_id: string; label: string; hasAudio: boolean }[],
+        current: { format_id: string; label: string; hasAudio: boolean }
+      ) => {
+        const existing = acc.find((item) => item.label === current.label);
+        if (!existing) {
+          acc.push(current);
+        } else if (current.hasAudio && !existing.hasAudio) {
+          const index = acc.findIndex((item) => item.label === current.label);
+          acc[index] = current;
         }
-        console.error('[formats] yt-dlp spawn error', err);
-        return res.status(500).json({ error: 'Failed to start yt-dlp process' });
-    });
+        return acc;
+      },
+      []
+    );
 
+    const formatsForUser = uniqueFormats.map(
+      (f: { hasAudio: boolean; format_id: string; label: string }) => ({
+        format_id: f.hasAudio ? f.format_id : `${f.format_id}+bestaudio`,
+        label: f.label,
+      })
+    );
+
+    return res.json({ formats: formatsForUser });
   } catch (err: unknown) {
-    if (tempCookiesPath && fs.existsSync(tempCookiesPath)) {
-      fs.unlinkSync(tempCookiesPath);
-    }
-    console.error(`[formats] failed`, err);
+    console.error("[formats] failed", err);
     const message = err instanceof Error ? err.message : String(err);
     return res.status(500).json({ error: message });
   }
 });
 
-app.get('/api/ping', (_req, res) => {
+app.get("/api/ping", (_req, res) => {
   return res.json({ success: true });
 });
 
-app.get("/", (req, res) => res.send("Server is alive!"));
+app.get("/", (_req, res) => res.send("Server is alive!"));
 
-// Test Supabase connection
-app.get("/api/test-supabase", async (req, res) => {
-  try {
-    console.log("Testing Supabase connection...");
-    console.log("Bucket name:", bucketName);
-    
-    // Test bucket access
-    const { data: buckets, error: bucketError } = await supabase.storage.listBuckets();
-    if (bucketError) {
-      console.error("Bucket list error:", bucketError);
-      return res.status(500).json({ error: "Failed to list buckets", details: bucketError });
-    }
-    
-    console.log("Available buckets:", buckets?.map(b => b.name));
-    
-    // Test bucket contents
-    const { data: files, error: fileError } = await supabase.storage.from(bucketName).list();
-    if (fileError) {
-      console.error("File list error:", fileError);
-      return res.status(500).json({ error: "Failed to list files", details: fileError });
-    }
-    
-    console.log("Files in bucket:", files?.map(f => f.name));
-    
-    return res.json({ 
-      success: true, 
-      bucketName,
-      buckets: buckets?.map(b => b.name),
-      files: files?.map(f => f.name)
-    });
-  } catch (err) {
-    console.error("Supabase test error:", err);
-    return res.status(500).json({ error: "Supabase test failed", details: err });
-  }
-});
+function cleanupOldJobs() {
+  const twentyFourHoursAgo = Date.now() - 24 * 60 * 60 * 1000;
 
-// Clean up old job files on startup
-async function cleanupOldJobs() {
-  const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  
-  console.log('Cleaning up old jobs from database...');
-  const { data, error } = await supabase
-    .from('jobs')
-    .delete()
-    .lt('created_at', twentyFourHoursAgo);
-  
-  if (error) {
-    console.error('Error during database job cleanup:', error);
-  } else if (data) {
-    console.log(`Cleaned up old jobs from database.`);
+  for (const [id, job] of jobs) {
+    if (job.createdAt < twentyFourHoursAgo) {
+      if (job.filePath && fs.existsSync(job.filePath)) {
+        fs.unlinkSync(job.filePath);
+      }
+      jobs.delete(id);
+      console.log(`[job ${id}] cleaned up (expired)`);
+    }
   }
 }
 
 app.listen(port, () => {
   console.log(`Server is running on port ${port}`);
-  console.log(`Environment: ${process.env.NODE_ENV}`);
-  console.log(`CORS origin: ${allowedOrigin}`);
+  logYtDlpConfig();
   cleanupOldJobs();
 });

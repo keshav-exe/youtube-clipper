@@ -1,6 +1,6 @@
 # YouTube Clipper
 
-A SaaS tool that allows users to extract specific clips from YouTube videos by providing a URL and start/end timestamps. Clips are processed efficiently and downloaded directly to your computer. Open source for folks who can't afford it and know how code works!
+A local tool to extract clips from YouTube videos by URL and start/end timestamps. Clips are processed with yt-dlp and ffmpeg, then downloaded directly to your computer.
 
 ---
 
@@ -35,6 +35,8 @@ ffmpeg -version
 
 If any are missing, install them via your package manager (e.g., `brew install bun yt-dlp ffmpeg` on macOS).
 
+**YouTube access:** The backend automatically uses cookies from **Chrome** (you must be logged into YouTube there). Using Safari or Firefox instead? Set `YT_DLP_COOKIES_BROWSER=safari` in `backend/.env`.
+
 ---
 
 ## Getting Started
@@ -55,6 +57,7 @@ cd youtube-clipper
 ```sh
 cd backend
 bun install
+bun run setup   # optional fallback yt-dlp binary
 ```
 
 #### Frontend
@@ -66,7 +69,18 @@ bun install
 
 ---
 
-### 3. Run the app
+### 3. Configure environment
+
+```sh
+cd frontend
+cp .env.example .env.local
+```
+
+The only required variable is `BACKEND_API_URL=http://localhost:3001`.
+
+---
+
+### 4. Run the app
 
 #### Start the backend
 
@@ -128,12 +142,10 @@ youtube-clipper/
 
 ## Troubleshooting
 
-- **yt-dlp or ffmpeg not found:**  
-  Make sure both are installed and available in your system PATH.
-- **Video fails to upload to Twitter:**  
-  The backend re-encodes all clips for Twitter compatibility. If you still have issues, ensure your ffmpeg is up to date.
-- **Port conflicts:**  
-  Change the port in the backend or frontend config if needed.
+- **"Sign in to confirm you're not a bot":** Log into [youtube.com](https://youtube.com) in Chrome. If you use another browser, set `YT_DLP_COOKIES_BROWSER=safari` (or `firefox`) in `backend/.env` and restart the backend.
+- **yt-dlp or ffmpeg not found:** Run `brew install yt-dlp ffmpeg` and restart the backend.
+- **Stale yt-dlp:** Run `brew upgrade yt-dlp` or `cd backend && bun run setup`.
+- **Port conflicts:** Change the port in the backend or frontend config if needed.
 
 ---
 
