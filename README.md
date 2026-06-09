@@ -1,15 +1,36 @@
 # YouTube Clipper
 
-A local tool to extract clips from YouTube videos by URL and start/end timestamps. Clips are processed with yt-dlp and ffmpeg, then downloaded directly to your computer.
+A fully local tool to extract clips from YouTube videos by URL and start/end timestamps. Clips are processed with yt-dlp and ffmpeg, then downloaded directly to your computer — no accounts, payments, or cloud storage.
+
+> **Credits:** This project is a local-only fork of [retrogtx/youtube-clipper](https://github.com/retrogtx/youtube-clipper). The original is a hosted SaaS with auth and subscriptions; this version strips all of that and runs entirely on your machine.
+
+### What's different from the original
+
+- No login, payments, or subscriptions
+- No database or cloud storage — everything runs and stays on your machine
+- Browser cookies (Chrome by default) for YouTube access — no manual cookie export
+- Some additional features on top of the original (see [Features](#features))
 
 ---
 
 ## Features
 
-- **Frontend:** NextJS + TailwindCSS (with Shadcn/UI)
-- **Backend:** Node.js (Express) with Bun runtime
-- **Video Processing:** Uses `yt-dlp` and `ffmpeg` for efficient, compatible video clipping
-- **No cloud storage required:** Clips are downloaded directly to your device
+- **Clip by URL and time range** — paste a YouTube link, set start/end timestamps (`HH:MM:SS`), download the clip
+- **Timestamp autofill** — links with `?t=966` (or `#t=1m30s`) auto-fill the start time
+- **Duration presets** — tap 15s, 30s, 1m, etc. to set the end time from your start point
+- **Quality picker** — choose resolution up to 1080p before clipping
+- **Aspect ratio** — original, vertical (9:16), or square (1:1) crop
+- **Subtitles** — optionally burn in English captions
+- **Progress feedback** — stacked toasts walk you through each step while processing
+- **Local-only** — no account, no upload to the cloud; the file saves straight to your computer
+
+---
+
+## Tech stack
+
+- **Frontend:** Next.js, Tailwind CSS, shadcn/ui
+- **Backend:** Express on Bun
+- **Processing:** [yt-dlp](https://github.com/yt-dlp/yt-dlp) + [ffmpeg](https://ffmpeg.org/)
 
 ---
 
@@ -44,9 +65,11 @@ If any are missing, install them via your package manager (e.g., `brew install b
 ### 1. Clone the repository
 
 ```sh
-git clone https://github.com/retrogtx/youtube-clipper
+git clone <this-repo-url>
 cd youtube-clipper
 ```
+
+Forked from [retrogtx/youtube-clipper](https://github.com/retrogtx/youtube-clipper)? Clone your fork instead.
 
 ---
 
@@ -105,18 +128,9 @@ bun run dev
 ## Usage
 
 1. Open the frontend in your browser (`http://localhost:3000`).
-2. Enter a YouTube URL and the desired start/end timestamps (format: `HH:MM:SS`).
-3. Click "Clip Video".
-4. The processed clip will be downloaded directly to your computer as `clip.mp4`.
-
----
-
-## Required System Packages
-
-- **yt-dlp**: Used for partial YouTube downloads.
-- **ffmpeg**: Used for video/audio processing and re-encoding.
-- **bun**: Used as the JavaScript/TypeScript runtime for both backend and frontend.
-- **node** and **npm**: For compatibility and tooling.
+2. Paste a YouTube URL (with an optional timestamp) and set your clip range.
+3. Pick quality, aspect ratio, and subtitles if you want them.
+4. Hit the download button — the clip saves as `clip.mp4`.
 
 ---
 
@@ -157,6 +171,25 @@ youtube-clipper/
 
 ---
 
-**Enjoy clipping YouTube videos!**
+## Disclaimer
 
-If you have any issues, please open an issue or PR.
+**This software is provided for personal, local use only.**
+
+YouTube Clipper is an independent, open-source tool. It is **not affiliated with, endorsed by, or sponsored by Google or YouTube**. YouTube is a trademark of Google LLC.
+
+By using this tool, you agree that:
+
+- You will use it **only for your own personal, non-commercial purposes** on content you have the right to access (e.g. videos you own, have permission to use, or are permitted to download under applicable law).
+- You are **solely responsible** for complying with [YouTube's Terms of Service](https://www.youtube.com/t/terms), applicable copyright laws, and any other laws in your jurisdiction. Downloading or clipping content you do not have rights to may violate those terms or laws.
+- The authors and contributors **do not encourage or condone** copyright infringement, circumvention of DRM, or any unlawful use of third-party content.
+- This software is provided **"as is"**, without warranty of any kind. The authors are **not liable** for any damages, claims, or legal consequences arising from your use of this tool.
+
+If you are a rights holder and believe this project facilitates infringement, please open an issue — this tool is intended strictly as a personal utility for local video processing, not as a service for distributing copyrighted material.
+
+---
+
+Built on top of **[retrogtx/youtube-clipper](https://github.com/retrogtx/youtube-clipper)** — thanks to the original authors for the yt-dlp/ffmpeg clipping pipeline and UI foundation.
+
+---
+
+**Enjoy clipping YouTube videos!**

@@ -25,7 +25,7 @@ function parseTimestampValue(value: string): number | null {
 export function parseYouTubeTimestamp(rawUrl: string): number | null {
   try {
     const url = new URL(
-      rawUrl.startsWith("http") ? rawUrl : `https://${rawUrl}`
+      rawUrl.startsWith("http") ? rawUrl : `https://${rawUrl}`,
     );
 
     const param =
@@ -87,7 +87,7 @@ export function timestampToSeconds(timestamp: string): number | null {
 
 export function addDurationToTimestamp(
   timestamp: string,
-  durationSeconds: number
+  durationSeconds: number,
 ): string {
   const base = timestampToSeconds(timestamp) ?? 0;
   return secondsToTimestamp(base + durationSeconds);
