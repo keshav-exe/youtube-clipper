@@ -1,0 +1,9 @@
+{
+  "name": "youtube-clipper",
+  "private": true,
+  "scripts": {
+    "dev": "bash scripts/dev.sh",
+    "install:all": "bun install --cwd backend && bun install --cwd frontend",
+    "setup": "bun run --cwd backend setup"
+  }
+}

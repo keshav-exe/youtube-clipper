@@ -75,19 +75,11 @@ Forked from [retrogtx/youtube-clipper](https://github.com/retrogtx/youtube-clipp
 
 ### 2. Install dependencies
 
-#### Backend
+From the repo root:
 
 ```sh
-cd backend
-bun install
+bun run install:all
 bun run setup   # optional fallback yt-dlp binary
-```
-
-#### Frontend
-
-```sh
-cd ../frontend
-bun install
 ```
 
 ---
@@ -105,23 +97,21 @@ The only required variable is `BACKEND_API_URL=http://localhost:3001`.
 
 ### 4. Run the app
 
-#### Start the backend
+From the repo root:
 
 ```sh
-cd backend
-bun run src/index.ts
-```
-
-- The backend will start on `http://localhost:3001` by default.
-
-#### Start the frontend
-
-```sh
-cd ../frontend
 bun run dev
 ```
 
-- The frontend will start on `http://localhost:3000` by default.
+- Backend: `http://localhost:3001`
+- Frontend: `http://localhost:3000`
+
+To run them separately instead:
+
+```sh
+cd backend && bun run dev
+cd frontend && bun run dev
+```
 
 ---
 
@@ -138,6 +128,9 @@ bun run dev
 
 ```
 youtube-clipper/
+  scripts/
+    dev.sh
+  package.json
   backend/
     src/
     uploads/
